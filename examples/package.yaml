@@ -1,3 +1,7 @@
 dependencies:
   mfrc522:
     path: ..
+  mifare-classic:
+    path: ../../toit-mifare-classic
+  nfc:
+    path: ../../toit-nfc

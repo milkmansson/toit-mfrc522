@@ -9,10 +9,9 @@ A driver for the MFRC522 RFID reader.
 import serial
 import nfc.card-type show CardType
 import nfc.crc show crc-a check-crc-a
+import nfc.frame show Frame
 import nfc.nfc-exception show NfcException
-import nfc.reader show Reader ReaderCapabilities Target
-import .crypto1
-import .frame
+import nfc.reader show Reader ReaderCapabilities Target RawFrameTarget
 
 class Mfrc522 implements Reader:
   static COMMAND-REGISTER_ ::= 0x01 << 1
@@ -45,15 +44,12 @@ class Mfrc522 implements Reader:
   static COMMAND-NO-CMD-CHANGE_ ::= 0x07       // No command change. Can be used to modify the other bits without affecting the command.
   static COMMAND-RECEIVE_ ::= 0x08             // Activates the receiver circuits.
   static COMMAND-TRANSCEIVE_ ::= 0x0C          // Transmits data from FIFO buffer to antenna and automatically activates the receiver after transmission.
-  static COMMAND-MF-AUTHENT_ ::= 0x0E          // Performs the MIFARE standard authentication as a reader.
   static COMMAND-SOFT-RESET_ ::= 0x0F          // Resets the MFRC522.
 
   registers_ /serial.Registers
 
   current-framing_ /int? := null
   current-parity_ /int? := null
-
-  crypto_ /MifareCryptoReader? := null
 
   constructor device/serial.Device:
     registers_ = device.registers
@@ -142,24 +138,14 @@ class Mfrc522 implements Reader:
   If $add-crc is true, then automatically adds the CRC to the $bytes. This is almost
     always the correct choice. The only exception is when the reader is authenticating
     a Mifare card.
-
-  If $crypto_ is not null then uses it to encrypt the data.
   */
   transceive-standard_ bytes/ByteArray --check-crc/bool=false --add-crc/bool=true -> Frame?:
     if add-crc:
       crc := crc-a bytes
       bytes += #[crc & 0xFF, (crc >> 8) & 0xFF]
 
-    result-frame/Frame? := ?
-    if crypto_:
-      frame := crypto_.encrypt bytes
-      result-frame = transceive_ frame
-      if result-frame:
-        decrypted := crypto_.decrypt result-frame
-        result-frame = Frame decrypted
-    else:
-      frame := Frame bytes
-      result-frame = transceive_ frame
+    frame := Frame bytes
+    result-frame := transceive_ frame
 
     if not result-frame: return null
 
@@ -261,7 +247,6 @@ class Mfrc522 implements Reader:
     bit.
   */
   transceive_ frame/Frame -> Frame?
-      --command/int=COMMAND-TRANSCEIVE_  // Can also be $COMMAND_MFAUTHENT_.
       --allow-collision/bool=false
       --shift-response-by/int=0:
 
@@ -291,14 +276,13 @@ class Mfrc522 implements Reader:
     registers_.write-bytes FIFO-DATA-REGISTER_ frame.bytes
 
     // Send the command.
-    registers_.write-u8 COMMAND-REGISTER_ command
+    registers_.write-u8 COMMAND-REGISTER_ COMMAND-TRANSCEIVE_
 
-    if command == COMMAND-TRANSCEIVE_:
-      // Execute the transceive.
-      // 9.3.1.14:
-      //   Bit 7: StartSend: If 1, starts the transmission of data; only valid in
-      //       combination with the Transceive command.
-      registers_.write-u8 BIT-FRAMING-REGISTER_ (registers_.read-u8 BIT-FRAMING-REGISTER_) | 0x80
+    // Execute the transceive.
+    // 9.3.1.14:
+    //   Bit 7: StartSend: If 1, starts the transmission of data; only valid in
+    //       combination with the Transceive command.
+    registers_.write-u8 BIT-FRAMING-REGISTER_ (registers_.read-u8 BIT-FRAMING-REGISTER_) | 0x80
 
     // Wait for the response:
     completed := false
@@ -592,113 +576,6 @@ class Mfrc522 implements Reader:
       return Card this uid sak[0]
 
     unreachable
-/*
-  is_authenticated_ -> bool:
-    // Section 9.3.1.9.
-    // Bit 3: MFCrypto1On. Indicates that the MIFARE Crypto1 unit is switched on.
-    return (registers_.read_u8 STATUS_2_REGISTER_) & 0x08 != 0
-
-  authenticate_ --block/int --key/ByteArray --uid/ByteArray --is_key_a/bool -> bool:
-    if uid.size != 4 and uid.size != 7 and uid.size != 10: throw "INVALID_ARGUMENT"
-    if key.size != 6: throw "INVALID_ARGUMENT"
-
-    // See MIFARE Classic EV1 1K spec.
-    // https://www.nxp.com/docs/en/data-sheet/MF1S50YYX_V1.pdf
-    // Section 9.1.
-    AUTHENT_KEY_A_COMMAND ::= 0x60
-    AUTHENT_KEY_B_COMMAND ::= 0x61
-
-    // Section 10.3.1.9. MFAuthent of MFRC522 datasheet.
-    // 12 bytes need to be written into the FIFO:
-    // - Authentication command code (60h, 61h), selecting key A or B.
-    // - Block address
-    // - 6 sector key bytes.
-    // - 4 card serial number bytes.
-    bytes := ByteArray 12
-    bytes[0] = is_key_a ? AUTHENT_KEY_A_COMMAND : AUTHENT_KEY_B_COMMAND
-    bytes[1] = block
-    bytes.replace 2 key
-    // Fill in the last 4 bytes of the UID.
-    // See section 3.2.5 of AN10927.
-    // See section 10.1.3 of MIFARE Classic EV1 1K spec.
-    bytes.replace 8 uid[uid.size - 4  ..]
-
-    frame := Frame bytes
-    result := transceive_ --command=COMMAND_MF_AUTHENT_ frame
-    return result != null
-
-  stop_crypto_:
-    // Section 9.3.1.9.
-    // Bit 3: MFCrypto1On. When this bit is cleared then the crypto1 is turned off.
-    old := registers_.read_u8 STATUS_2_REGISTER_
-    registers_.write_u8 STATUS_2_REGISTER_ (old & ~0x08)
-*/
-
-  is-authenticated_ -> bool:
-    return crypto_ != null
-
-  authenticate_ --block/int --key/ByteArray --uid/ByteArray --is-key-a/bool -> bool:
-    successful := false
-    try:
-      if uid.size != 4 and uid.size != 7 and uid.size != 10: throw "INVALID_ARGUMENT"
-      if key.size != 6: throw "INVALID_ARGUMENT"
-
-      // See MIFARE Classic EV1 1K spec.
-      // https://www.nxp.com/docs/en/data-sheet/MF1S50YYX_V1.pdf
-      // Section 9.1.
-      AUTHENT-KEY-A-COMMAND ::= 0x60
-      AUTHENT-KEY-B-COMMAND ::= 0x61
-
-      // TODO(florian): apparently we need to decrypt the nonce tag with the new
-      // crypto1. Currently it's encrypted with the old one.
-      // See crypto1.toit main: the last examples there are decoded correctly.
-
-      is-nested := crypto_ != null
-
-      if not crypto_:
-        crypto_ = MifareCryptoReader --uid=uid
-
-      crypto_.start-authentication --key=key
-
-      nonce-tag-frame := transceive-standard_ --no-check-crc #[
-            is-key-a ? AUTHENT-KEY-A-COMMAND : AUTHENT-KEY-B-COMMAND,
-            block,
-          ]
-
-      if not nonce-tag-frame:
-        print "no nonce tag"
-        return false
-
-      nonce-tag := nonce-tag-frame.bytes
-
-      // In theory this should be a random number.
-      nonce-reader := #[ 0x00, 0x00, 0x00, 0x00 ]
-
-      sleep --ms=10
-      challenge-response := crypto_.generate-challenge-response
-          --nonce-tag=nonce-tag
-          --nonce-reader=nonce-reader
-
-      tag-response-frame := transceive-standard_
-          --no-add-crc
-          --no-check-crc
-          challenge-response
-
-      if not tag-response-frame:
-        print "no tag response frame"
-        return false
-
-      successful = crypto_.compare-tag-response tag-response-frame.bytes
-      return successful
-    finally:
-      // Make sure we don't leave the crypto in a bad state.
-      // If we are not successful, then the communication is pretty much
-      // broken anyway.
-      if not successful:
-        crypto_ = null
-
-  stop-crypto_:
-    crypto_ = null
 
   wake-up-cards_ --only-new/bool=false -> Frame?:
     reset-communication_
@@ -927,7 +804,7 @@ An RFID card.
 
 Also known as "PICC" ("Proximity Inductive Coupling Card").
 */
-class Card implements Target:
+class Card implements Target RawFrameTarget:
   /** The UID of this card. */
   uid/ByteArray
   // The proximity coupling device (aka "transceiver").
@@ -936,7 +813,6 @@ class Card implements Target:
   is-closed/bool := false
 
   constructor transceiver/Mfrc522 uid/ByteArray sak/int:
-    if sak & 0x08 != 0: return MifareCard transceiver uid sak
     return Card.private_ transceiver uid sak
 
   constructor.private_ .transceiver_ .uid .sak_:
@@ -967,6 +843,10 @@ class Card implements Target:
     assert: received-frame.size-in-bits == received-frame.bytes.size * 8
     return received-frame.bytes
 
+  /** See $RawFrameTarget.transceive-raw. */
+  transceive-raw frame/Frame -> Frame?:
+    return transceiver_.transceive_ frame
+
   halt_ -> none:
     hlta := #[0x50, 0x00]
     // The transceive will wait for a response, timing out.
@@ -985,647 +865,3 @@ class Card implements Target:
     uid.do: uid-str += "$(%02x it)"
     return "UID: $uid-str - $(CardType.to-string type)"
 
-// https://www.nxp.com/docs/en/data-sheet/MF1S50YYX_V1.pdf
-class MifareCard extends Card:
-  /**
-  The first block of a Mifare card contains the manufacturer data.
-  It is generally read-only (except for "magic" cards), and contains:
-  -
-  */
-  static MANUFACTURER-BLOCK ::= 0
-
-  static MIFARE-READ_ ::= 0x30
-  static MIFARE-WRITE_ ::= 0xA0
-  static ACK_ ::= #[0x0A]
-
-  /** Default key for Mifare cards. */
-  static DEFAULT-KEY := #[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
-
-  constructor transceiver/Mfrc522 uid/ByteArray sak/int:
-    super.private_ transceiver uid sak
-
-  authenticate --block/int key/ByteArray=DEFAULT-KEY --is-key-a/bool=true:
-    return transceiver_.authenticate_ --uid=uid --block=block --key=key --is-key-a=is-key-a
-
-  is-authenticated -> bool:
-    return transceiver_.is-authenticated_
-
-  read --block/int:
-    if not 0 <= block <= total-block-count: throw "INVALID_ARGUMENT"
-    bytes := #[ MIFARE-READ_, block]
-    return transceive bytes --check-crc
-
-  /**
-  Writes $bytes to a given block.
-
-  Checks that the data is valid for block 0 (the UUID), that the sector trailer's access
-    bits are correct, and that they don't lock out the user from modifying the access
-    bits in the future.
-  If $force is true, writes the data, without doing any check.
-  If $force-lockout is true, verifies that the data is correct, but allows to
-    lock out the user from modifying the access bits in the future. The parameter
-    $force implies $force-lockout.
-  The $force and $force-lockout flags only verify the data in the $bytes array. They
-    don't check that the user is allowed to write to the block.
-  */
-  write --block/int bytes/ByteArray --force/bool=false --force-lockout/bool=false -> none:
-    if not 0 <= block <= total-block-count: throw "INVALID_ARGUMENT"
-    if bytes.size != 16: throw "MifareCard.write: bytes must be 16 bytes long"
-    if block == MANUFACTURER-BLOCK and not force: check-manufacturer-data_ bytes
-    if is-trailer-block block and not force: check-trailer-data_ bytes --allow-lockout=(not force-lockout)
-
-    response := transceive #[ MIFARE-WRITE_, block ]
-    if response != ACK_: throw (MifareException.from-response response)
-    response = transceive bytes
-    if response != ACK_: throw (MifareException.from-response response)
-
-  close -> none:
-    // Call halt first, before we reset the authentication.
-    super
-    transceiver_.stop-crypto_
-
-  is-trailer-block block/int:
-    if block < (32 * 4):
-      return block % 4 == 3
-    return block % 16 == 15
-
-  is-first-block-in-sector block/int:
-    if block < (32 * 4):
-      return block % 4 == 0
-    return block % 16 == 0
-
-  sectors-count -> int:
-    if type == CardType.MIFARE-MINI:
-      return 5
-    else if type == CardType.MIFARE-1K or type == CardType.MIFARE-PLUS-DESFIRE:
-      return 16
-    else if type == CardType.MIFARE-4K:
-      return 40
-    throw "Unknown card"
-
-  total-block-count -> int:
-    sectors := sectors-count
-    if sectors <= 32: return sectors * 4
-    return 32 * 4 + (sectors - 32) * 16
-
-  /**
-  The size of the given block in blocks.
-  */
-  sector-size-in-blocks sector/int -> int:
-    if sector < 32: return 4
-    return 16
-
-  check-keys_ keys/List:
-    keys.do:
-      if it.size != 6: throw "Keys must be 6 bytes long"
-
-  dump --keys/List=(List sectors-count: DEFAULT-KEY) -> ByteArray:
-    check-keys_ keys
-    result := ByteArray total-block-count * 16
-    sector-counter := 0
-    key/ByteArray? := null
-    for i := 0; i < total-block-count; i++:
-      if is-first-block-in-sector i:
-        // Set the key so we can update the trailer block later.
-        key = keys[sector-counter]
-        authenticated := authenticate --block=i key
-        if not authenticated: throw (MifareException.from-code MifareException.AUTHENTICATION-FAILED)
-        sector-counter++
-      block-bytes := read --block=i
-      if is-trailer-block i: block-bytes.replace 0 key
-      result.replace (i * 16) block-bytes
-    return result
-
-  /**
-  Dumps the content of the card to stdout.
-
-  If there is an authentication error automatically reconnects. This might wake up other
-    cards that are in the field.
-  */
-  write-to-stdout --keys/List=(List sectors-count: DEFAULT-KEY) --print-last-first/bool=true:
-    check-keys_ keys
-    result := ByteArray total-block-count * 16
-    sector-counter := 0
-    key/ByteArray? := null
-    block := 0
-    while block < total-block-count:
-      if is-first-block-in-sector block:
-        if block != 0: print
-        print "Sector $sector-counter:"
-        // Set the key so we can update the trailer block later.
-        key = keys[sector-counter]
-        authenticated := authenticate --block=block key
-        if not authenticated:
-          print "  encrypted"
-          reset-communication_
-          // Skip over the remaining blocks in this sector.
-          block += sector-size-in-blocks sector-counter
-          sector-counter++
-          continue
-
-      blocks := []
-      sector-size := sector-size-in-blocks sector-counter
-      for j := 0; j < sector-size; j++:
-        block-bytes := read --block=block
-        if is-trailer-block block: block-bytes.replace 0 key
-        blocks.add block-bytes
-        block++
-
-      access-bits := AccessBits.from-trailer blocks.last
-      for i := 0; i < blocks.size; i++:
-        block-bytes := blocks[i]
-        block-str := ""
-        block-bytes.do: block-str += "$(%02x it)"
-        area/int := ?
-        if sector-size == 4:
-          area = i
-        else
-          if i < 5: area = 0
-          else if i < 10: area = 1
-          else if i < 15: area = 2
-          else: area = 3
-
-        legend := access-bits.stringify --area=area
-
-        print "  $block-str ($legend)"
-
-      sector-counter++
-
-  throw-mifare-error_ response/ByteArray:
-
-    if response.size != 1: throw "Invalid response size"
-    if response[0] == 0x00: throw "Invalid operation"
-    if response[0] == 0x01: throw "Parity or CRC error"
-
-  check-manufacturer-data_ bytes/ByteArray:
-    // We assume that the UID must be of the same size as the current UID.
-    // Magic cards generally don't allow to switch UID size.
-    new-uid-bytes := bytes[..uid.size]
-    bcc := 0
-    new-uid-bytes.do: bcc ^= it
-    if bcc != bytes[uid.size]: throw (MifareException.from-code MifareException.INVALID-UID-BCC)
-
-  check-trailer-data_ byte/ByteArray --allow-lockout/bool:
-    access-bits := AccessBits.from-trailer byte
-    if allow-lockout: return
-    if not access-bits.can-write-access-bits --with-key-a --with-key-b:
-      throw (MifareException.from-code MifareException.ACCESS-BITS-LOCKOUT)
-
-  reset-communication_:
-    transceiver_.stop-crypto_
-    halt_
-    transceiver_.wake-up-cards_
-    transceiver_.select_ uid
-
-/**
-Access bits of a Mifare card.
-
-A trailer block encodes 4 integers, each between 0 and 7.
-The first three integers provide the access bits for the data blocks.
-The list integer provides the access bits for the trailer block itself.
-
-When a sector has more than 3 data blocks (Mifare 4K), then the access bits are
-  applied as follows:
-  * b0 (the first byte), applies to blocks 0-4
-  * b1 (the second byte), applies to blocks 5-9
-  * b2 (the third byte), applies to blocks 10-14
-
-b3 is always the access bits for the trailer block.
-
-The meaning of the access bits for data blocks is as follows:
-```
-        read write increment decrement/transfer/restore
-0b000:   AB   AB      AB       AB    # Transport configuration
-0b010:   AB   --      --       --    # read/write block
-0b100:   AB    B      --       --    # read/write block
-0b110:   AB    B       B       AB    # value block
-0b001:   AB   --      --       AB    # value block
-0b011:    B    B      --       --    # read/write block
-0b101:    B   --      --       --    # read/write block
-0b111:   --   --      --       --    # read/write block
-```
-
-The meaning of the access bits for the trailer block is as follows.
-```
-        Key A, Access bits, Key B
-0b000: Aw   ,  Ar        , Arw      # Key B is readable.
-0b010:      ,  Ar        , Ar       # Key B is readable.
-0b100:    Bw,  Ar  Br    ,     Bw
-0b110:      ,  Ar  Br    ,
-0b001: Aw   ,  Arw       , Arw      # Transport configuration. Key B is readable.
-0b011:    Bw,  Ar  Brw   ,     Bw
-0b101:      ,  Ar  Brw   ,
-0b111:      ,  Ar  Br    ,
-```
-*/
-class AccessBits:
-  /**
-  Constructs the access bits for a data area.
-
-  Not all combinations of $key-a-read, $key-b-read, $key-a-write, $key-b-write,
-    $key-a-increment, $key-b-increment, $key-a-decrement, $key-b-decrement are possible.
-  */
-  static build-data-area-bits -> int
-      --key-a-read/bool --key-b-read/bool
-      --key-a-write/bool --key-b-write/bool
-      --key-a-increment/bool --key-b-increment/bool
-      --key-a-decrement/bool --key-b-decrement/bool:
-    if key-a-read and key-b-read and
-        key-a-write and key-b-write and
-        key-a-increment and key-b-increment and
-        key-a-decrement and key-b-decrement:
-      return 0b000
-    if key-a-read and key-b-read and
-        not key-a-write and not key-b-write and
-        not key-a-increment and not key-b-increment and
-        not key-a-decrement and not key-b-decrement:
-      return 0b010
-    if key-a-read and key-b-read and
-        not key-a-write and key-b-write and
-        not key-a-increment and not key-b-increment and
-        not key-a-decrement and not key-b-decrement:
-      return 0b100
-    if key-a-read and key-b-read and
-        not key-a-write and key-b-write and
-        not key-a-increment and key-b-increment and
-        key-a-decrement and key-b-decrement:
-      return 0b110
-    if key-a-read and key-b-read and
-        not key-a-write and not key-b-write and
-        not key-a-increment and not key-b-increment and
-        key-a-decrement and key-b-decrement:
-      return 0b001
-    if not key-a-read and key-b-read and
-        not key-a-write and key-b-write and
-        not key-a-increment and not key-b-increment and
-        not key-a-decrement and not key-b-decrement:
-      return 0b011
-    if not key-a-read and key-b-read and
-        not key-a-write and not key-b-write and
-        not key-a-increment and not key-b-increment and
-        not key-a-decrement and not key-b-decrement:
-      return 0b101
-    if not key-a-read and not key-b-read and
-        not key-a-write and not key-b-write and
-        not key-a-increment and not key-b-increment and
-        not key-a-decrement and not key-b-decrement:
-      return 0b111
-    throw "INVALID_ARGUMENT"
-
-  /**
-  Constructs the access bits for a trailer area.
-
-  Not all combinations of
-    $read-key-b-with-key-a,
-    $write-key-a-with-key-a, $write-key-a-with-key-b,
-    $write-key-b-with-key-a, $write-key-b-with-key-b,
-    $read-access-bits-with-key-a, $read-access-bits-with-key-b,
-    $write-access-bits-with-key-a, $write-access-bits-with-key-b are possible.
-  */
-  static build-trailer-bits -> int
-      --read-key-b-with-key-a/bool
-      --write-key-a-with-key-a/bool --write-key-a-with-key-b/bool
-      --write-key-b-with-key-a/bool --write-key-b-with-key-b/bool
-      --read-access-bits-with-key-a/bool --read-access-bits-with-key-b/bool
-      --write-access-bits-with-key-a/bool --write-access-bits-with-key-b/bool:
-    if read-key-b-with-key-a and
-        write-key-a-with-key-a and not write-key-a-with-key-b and
-        write-key-b-with-key-a and not write-key-b-with-key-b and
-        read-access-bits-with-key-a and not read-access-bits-with-key-b and
-        not write-access-bits-with-key-a and not write-access-bits-with-key-b:
-      return 0b000
-    if read-key-b-with-key-a and
-        not write-key-a-with-key-a and not write-key-a-with-key-b and
-        not write-key-b-with-key-a and not write-key-b-with-key-b and
-        read-access-bits-with-key-a and not read-access-bits-with-key-b and
-        not write-access-bits-with-key-a and not write-access-bits-with-key-b:
-      return 0b010
-    if not read-key-b-with-key-a and
-        not write-key-a-with-key-a and write-key-a-with-key-b and
-        not write-key-b-with-key-a and write-key-b-with-key-b and
-        read-access-bits-with-key-a and read-access-bits-with-key-b and
-        not write-access-bits-with-key-a and not write-access-bits-with-key-b:
-      return 0b100
-    if not read-key-b-with-key-a and
-        not write-key-a-with-key-a and not write-key-a-with-key-b and
-        not write-key-b-with-key-a and not write-key-b-with-key-b and
-        read-access-bits-with-key-a and read-access-bits-with-key-b and
-        not write-access-bits-with-key-a and not write-access-bits-with-key-b:
-      return 0b110
-    if read-key-b-with-key-a and
-        write-key-a-with-key-a and not write-key-a-with-key-b and
-        write-key-b-with-key-a and not write-key-b-with-key-b and
-        read-access-bits-with-key-a and not read-access-bits-with-key-b and
-        write-access-bits-with-key-a and not write-access-bits-with-key-b:
-      return 0b001
-    if not read-key-b-with-key-a and
-        not write-key-a-with-key-a and write-key-a-with-key-b and
-        not write-key-b-with-key-a and not write-key-b-with-key-b and
-        read-access-bits-with-key-a and read-access-bits-with-key-b and
-        not write-access-bits-with-key-a and write-access-bits-with-key-b:
-      return 0b011
-    if not read-key-b-with-key-a and
-        not write-key-a-with-key-a and not write-key-a-with-key-b and
-        not write-key-b-with-key-a and not write-key-b-with-key-b and
-        read-access-bits-with-key-a and read-access-bits-with-key-b and
-        not write-access-bits-with-key-a and write-access-bits-with-key-b:
-      return 0b101
-    if not read-key-b-with-key-a and
-        not write-key-a-with-key-a and not write-key-a-with-key-b and
-        not write-key-b-with-key-a and not write-key-b-with-key-b and
-        read-access-bits-with-key-a and read-access-bits-with-key-b and
-        not write-access-bits-with-key-a and not write-access-bits-with-key-b:
-      return 0b111
-    throw "INVALID_ARGUMENT"
-
-  b0 /int
-  b1 /int
-  b2 /int
-  b3 /int
-
-  constructor.from-trailer bytes/ByteArray:
-    if bytes.size != 16: throw "INVALID_ARGUMENT"
-    c1 := bytes[7] >> 4
-    c2 := bytes[8] & 0xf
-    c3 := bytes[8] >> 4
-    c1_ := bytes[6] & 0xf
-    c2_ := bytes[6] >> 4
-    c3_ := bytes[7] & 0xf
-
-    // cX_ should always be the inverted version of cX.
-    if c1_ != 0xf - c1 or c2_ != 0xf - c2 or c3_ != 0xf - c3:
-      throw (MifareException.from-code MifareException.INVALID-ACCESS-BITS)
-    else:
-      b0 = (c1 & 0b0001) << 2 | (c2 & 0b0001) << 1 | (c3 & 0b0001) << 0
-      b1 = (c1 & 0b0010) << 1 | (c2 & 0b0010) << 0 | (c3 & 0b0010) >> 1
-      b2 = (c1 & 0b0100) << 0 | (c2 & 0b0100) >> 1 | (c3 & 0b0100) >> 2
-      b3 = (c1 & 0b1000) >> 1 | (c2 & 0b1000) >> 2 | (c3 & 0b1000) >> 3
-
-  /**
-  Builds a instance with the given access bits for each area.
-  */
-  constructor .b0 .b1 .b2 .b3:
-    if not 0 <= b0 <= 7: throw "INVALID_ARGUMENT"
-    if not 0 <= b1 <= 7: throw "INVALID_ARGUMENT"
-    if not 0 <= b2 <= 7: throw "INVALID_ARGUMENT"
-    if not 0 <= b3 <= 7: throw "INVALID_ARGUMENT"
-
-  /**
-  Returns whether it is possible to read the blocks covered by the given $area with
-    key A (if $with-key-a is true) and/or key B (if $with-key-b is true).
-
-  The $area must be in range 0-2, as this function only covers the access bits for
-    data blocks.
-  */
-  can-read-data --area/int --with-key-a/bool --with-key-b/bool -> bool:
-    bits := area-to-bits_ area
-
-    if with-key-a:
-      if bits == 0b000 or bits == 0b010 or bits == 0b100 or bits == 0b110 or bits == 0b001: return true
-    if with-key-b:
-      if bits != 0b111: return true
-    return false
-
-  /**
-  Returns whether it is possible to write the blocks covered by the given $area with
-    key A (if $with-key-a is true) and/or key B (if $with-key-b is true).
-
-  The $area must be in range 0-2, as this function only covers the access bits for
-    data blocks.
-  */
-  can-write-data --area/int --with-key-a/bool --with-key-b/bool -> bool:
-    bits := area-to-bits_ area
-
-    if with-key-a and bits == 0b000: return true
-    if with-key-b:
-      if bits == 0b000 or bits == 0b100 or bits == 0b110 or bits == 0b011: return true
-    return false
-
-  /**
-  Returns whether is is possible increment the blocks covered by the given $area with
-    key A (if $with-key-a is true) and/or key B (if $with-key-b is true).
-
-  The $area must be in range 0-2, as this function only covers the access bits for
-    data blocks.
-  */
-  can-increment-data --area/int --with-key-a/bool --with-key-b/bool -> bool:
-    bits := area-to-bits_ area
-
-    if with-key-a and bits == 0b000: return true
-    if with-key-b and bits == 0b000 or bits == 0b110: return true
-    return false
-
-  /**
-  Returns whether is is possible decrement the blocks covered by the given $area with
-    key A (if $with-key-a is true) and/or key B (if $with-key-b is true).
-
-  The $area must be in range 0-2, as this function only covers the access bits for
-    data blocks.
-  */
-  can-decrement-data --area/int --with-key-a/bool --with-key-b/bool -> bool:
-    bits := area-to-bits_ area
-
-    if not with-key-a and not with-key-b: return false
-    return bits == 0b000 or bits == 0b110 or bits == 0b001
-
-  /**
-  Returns whether it is possible to read key B of the trailer block with key A.
-
-  Note: there is no `can_read_key_a` as key A is never readable.
-  */
-  can-read-key-b -> bool:
-    return b3 == 0b000 or b3 == 0b010 or b3 == 0b001
-
-  /**
-  Whether it is possible to write key A or B of the trailer block with key
-    A (if $with-key-a is true) and/or key B (if $with-key-b is true).
-  */
-  can-write-key --with-key-a/bool --with-key-b/bool -> bool:
-    if with-key-a:
-      if b3 == 0b000 or b3 == 0b001: return true
-    if with-key-b:
-    if b3 == 0b100 or b3 == 0b011: return true
-    return false
-
-  /**
-  Whether it is possible to read the access bits of the trailer block with key B.
-
-  Note: key A can always read the access bits.
-  */
-  can-read-access-bits --with-key-b/bool -> bool:
-    if not with-key-b: return false
-    return b3 == 0b100 or b3 == 0b110 or b3 == 0b011 or b3 == 0b101 or b3 == 0b111
-
-  /**
-  Whether it is possible to write the access bits of the trailer block with key A
-    (if $with-key-a is true) and/or key B (if $with-key-b is true).
-  */
-  can-write-access-bits --with-key-a/bool --with-key-b/bool -> bool:
-    if with-key-a and b3 == 0b001: return true
-    if with-key-b:
-      if b3 == 0b011 or b3 == 0b101: return true
-    return false
-
-  /**
-  Writes the access bits into the given $bytes trailer.
-
-  This modifies bytes 6, 7 and 8 of the $bytes.
-  */
-  write-into-trailer bytes/ByteArray:
-    if bytes.size != 16: throw "INVALID_ARGUMENT"
-
-    c1 := (b0 >> 2) & 0b0001 | (b1 >> 1) & 0b0010 | (b2 >> 0) & 0b0100 | (b3 << 1) & 0b1000
-    c2 := (b0 >> 1) & 0b0001 | (b1 >> 0) & 0b0010 | (b2 << 1) & 0b0100 | (b3 << 2) & 0b1000
-    c3 := (b0 >> 0) & 0b0001 | (b1 << 1) & 0b0010 | (b2 << 2) & 0b0100 | (b3 << 3) & 0b1000
-    c1_ := 0xf - c1
-    c2_ := 0xf - c2
-    c3_ := 0xf - c3
-    bytes[6] = (c2_ << 4) | c1_
-    bytes[7] = (c1 << 4) | c3_
-    bytes[8] = (c3 << 4) | c2
-
-  stringify -> string:
-    return """
-      $(data-access-bits-to-string b0)
-      $(data-access-bits-to-string b1)
-      $(data-access-bits-to-string b2)
-      $(trailer-access-bits-to-string b3)
-      """
-
-  area-to-bits_ area/int -> int:
-    if not 0 <= area <= 3: throw "INVALID_ARGUMENT"
-    if area == 0: return b0
-    else if area == 1: return b1
-    else if area == 2: return b2
-    return b3
-
-  /**
-  Stringifies the access bits for the given $area.
-
-  The $area value must be in range 0-3.
-  For Mifare 1K, the $area value is equivalent to the block in the sector.
-  For Mifare 4K, the $area value may cover multiple blocks.
-  */
-  stringify --area/int:
-    if not 0 <= area <= 3: throw "INVALID_ARGUMENT"
-    if area == 0: return data-access-bits-to-string b0
-    if area == 1: return data-access-bits-to-string b1
-    if area == 2: return data-access-bits-to-string b2
-    return trailer-access-bits-to-string b3
-
-  /**
-  Returns a string representation of the access bits of a data block ($b0, $b1, or $b2).
-  */
-  data-access-bits-to-string area/int -> string:
-    if area == 0b000:
-      return "000 - read:AB, write:AB, increment:AB, decrement:AB"
-    if area == 0b010:
-      return "010 - read:AB"
-    if area == 0b100:
-      return "100 - read:AB, write:B"
-    if area == 0b110:
-      return "110 - read:AB, write:B, increment:B, decrement:AB"
-    if area == 0b001:
-      return "001 - read:AB, decrement:AB"
-    if area == 0b011:
-      return "011 - read:B, write:B"
-    if area == 0b101:
-      return "101 - read:B"
-    if area == 0b111:
-      return "111 - no access"
-    unreachable
-
-  /**
-  Returns a string representation of the access bits of the trailer block ($b3).
-  */
-  trailer-access-bits-to-string bits/int -> string:
-    if bits == 0b000:
-      return "000 - Key A: Aw, Bits: Ar, Key B: Arw"
-    if bits == 0b010:
-      return "010 - Bits: Ar, Key B: Ar"
-    if bits == 0b100:
-      return "100 - Key A: Bw, Bits: Ar Br,  Key B: Bw"
-    if bits == 0b110:
-      return "110 - Bits: Ar Br"
-    if bits == 0b001:
-      return "001 - Key A: Aw, Bits: Arw, Key B: Arw"
-    if bits == 0b011:
-      return "011 - Key A: Bw, Bits: Ar Brw, Key B: Bw"
-    if bits == 0b101:
-      return "101 - Bits: Ar Brw"
-    if bits == 0b111:
-      return "111 - Bits: Ar Br"
-    unreachable
-
-
-class MifareException:
-  static INVALID-OPERATION-VALID-BUFFER ::= 0x00
-  static PARITY-OR-CRC-ERROR-VALID-BUFFER ::= 0x01
-  static INVALID-OPERATION-INVALID-BUFFER ::= 0x04
-  static PARITY-OR-CRC-ERROR-INVALID-BUFFER ::= 0x05
-
-  /**
-  The card did not return an ACK, but the response did not match any known error code
-    or format.
-  */
-  static INVALID-ERROR-RESPONSE ::= -1
-  /**
-  When writing the manufacturer block, the BCC (block check character) was found to be
-    invalid.
-  A BCC is a checksum over the UID bytes, and an invalid BCC can brick magic cards.
-  */
-  static INVALID-UID-BCC ::= -2
-  /**
-  Invalid access bits.
-
-  Normaly, the access bits of a trailer block are duplicated in such a way that
-    each bit has a corresponding inverted bit. This error is used when that's
-    not the case.
-  */
-  static INVALID-ACCESS-BITS ::= -3
-
-  /**
-  The Mifare authentication failed.
-  */
-  static AUTHENTICATION-FAILED ::= -4
-
-  /**
-  Dangerous access bits.
-
-  This code is used when a user tries to write a trailer block with access bits
-    that would lock out the owner of the card.
-  */
-  static ACCESS-BITS-LOCKOUT ::= -5
-
-  /** The received data, if any. */
-  response/ByteArray?
-
-  /**
-  The code of the error.
-
-  Codes $INVALID-OPERATION-VALID-BUFFER, $PARITY-OR-CRC-ERROR-VALID-BUFFER, $INVALID-OPERATION-INVALID-BUFFER and
-    $PARITY-OR-CRC-ERROR-INVALID-BUFFER are responses from the Mifare card. Other codes are defined by this library.
-  */
-  code/int
-
-  constructor.from-response .response/ByteArray:
-    if response.size != 1: code = INVALID-ERROR-RESPONSE
-    if response[0] != INVALID-OPERATION-VALID-BUFFER and response[0] != PARITY-OR-CRC-ERROR-VALID-BUFFER and
-        response[0] != INVALID-OPERATION-INVALID-BUFFER and response[0] != PARITY-OR-CRC-ERROR-INVALID-BUFFER:
-      code = INVALID-ERROR-RESPONSE
-    else:
-      code = response[0]
-
-  constructor.from-code .code:
-    response = null
-
-  stringify -> string:
-    if code == INVALID-OPERATION-VALID-BUFFER: return "Invalid operation (valid buffer)"
-    if code == PARITY-OR-CRC-ERROR-VALID-BUFFER: return "Parity or CRC error (valid buffer)"
-    if code == INVALID-OPERATION-INVALID-BUFFER: return "Invalid operation (invalid buffer)"
-    if code == PARITY-OR-CRC-ERROR-INVALID-BUFFER: return "Parity or CRC error (invalid buffer)"
-    if code == INVALID-ERROR-RESPONSE: return "Invalid response: $response"
-    if code == INVALID-UID-BCC: return "Invalid UID BCC"
-    if code == INVALID-ACCESS-BITS: return "Invalid access bits"
-    if code == AUTHENTICATION-FAILED: return "Authentication failed"
-    return "Unknown error code: $code"

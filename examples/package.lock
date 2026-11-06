@@ -1,8 +1,14 @@
 prefixes:
   mfrc522: toit-mfrc522
+  mifare-classic: toit-mifare-classic
+  nfc: toit-nfc
 packages:
   toit-mfrc522:
     path: ..
+    prefixes:
+      nfc: toit-nfc
+  toit-mifare-classic:
+    path: ../../toit-mifare-classic
     prefixes:
       nfc: toit-nfc
   toit-nfc:

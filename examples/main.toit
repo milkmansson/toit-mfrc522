@@ -3,6 +3,8 @@
 // be found in the EXAMPLES_LICENSE file.
 
 import mfrc522
+import mifare-classic
+import nfc.card-type show CardType
 import spi
 import gpio
 
@@ -41,9 +43,9 @@ IDRAET-UID ::= #[ 0x04, 0x17, 0x99, 0xf2, 0xda, 0x61, 0x80 ]
 IDRAET-KEYS ::= (::
   key1 := #[ 0x3e, 0x65, 0xe4, 0xfb,0x65,0xb3]
   keys := []
-  4.repeat: keys.add mfrc522.MifareCard.DEFAULT-KEY
+  4.repeat: keys.add mifare-classic.ClassicCard.DEFAULT-KEY
   11.repeat: keys.add key1
-  keys.add mfrc522.MifareCard.DEFAULT-KEY
+  keys.add mifare-classic.ClassicCard.DEFAULT-KEY
   keys
 ).call
 
@@ -71,10 +73,14 @@ main:
         print "--------------- $iteration $it"
         found-piccs.add it
 
+      is-mifare-classic := : | type/int |
+        type == CardType.MIFARE-MINI or type == CardType.MIFARE-1K or
+            type == CardType.MIFARE-4K or type == CardType.MIFARE-PLUS-DESFIRE
+
       found-piccs.do:
         reader.with-picc it.uid:
-          if it is mfrc522.MifareCard:
-            mifare := it as mfrc522.MifareCard
+          if is-mifare-classic.call it.type:
+            mifare := mifare-classic.ClassicCard it
 
             // dump := mifare.dump
             // List.chunk_up 0 dump.size 16: | from to |
