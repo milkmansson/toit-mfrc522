@@ -10,7 +10,7 @@ class NfcException:
     the anti-collision protocol selected one of two cards, but none responded at
     the next step.
   */
-  static NO_RESPONSE ::= 0
+  static NO-RESPONSE ::= 0
 
   /** A CRC error was detected. */
   static CRC ::= 1
@@ -30,7 +30,7 @@ class NfcException:
   static PROTOCOL ::= 4
 
   /** A timeout was detected. */
-  static TIMEOUT_ERROR ::= 5
+  static TIMEOUT-ERROR ::= 5
 
   /** A collision was detected. */
   static COLLISION ::= 6
@@ -49,23 +49,23 @@ class NfcException:
 
   code/int
 
-  constructor.no_response: code = NO_RESPONSE
+  constructor.no-response: code = NO-RESPONSE
   constructor.crc:         code = CRC
   constructor.parity:      code = PARITY
   constructor.checksum:    code = CHECKSUM
   constructor.protocol:    code = PROTOCOL
-  constructor.timeout:     code = TIMEOUT_ERROR
+  constructor.timeout:     code = TIMEOUT-ERROR
   constructor.collision:   code = COLLISION
   constructor.internal:    code = INTERNAL
   constructor.temperature: code = TEMPERATURE
 
   stringify -> string:
-    if code == NO_RESPONSE: return "No response from card"
+    if code == NO-RESPONSE: return "No response from card"
     if code == CRC: return "CRC error"
     if code == PARITY: return "Parity error"
     if code == CHECKSUM: return "Checksum error (block check character)"
     if code == PROTOCOL: return "Protocol error"
-    if code == TIMEOUT_ERROR: return "Timeout"
+    if code == TIMEOUT-ERROR: return "Timeout"
     if code == COLLISION: return "Collision"
     if code == INTERNAL: return "Internal error"
     if code == TEMPERATURE: return "Temperature error; antenna is off due to overheating"

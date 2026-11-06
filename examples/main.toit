@@ -6,10 +6,10 @@ import mfrc522
 import spi
 import gpio
 
-SPI_MOSI ::= 23
-SPI_MISO ::= 19
-SPI_CLK ::= 18
-SPI_SS ::= 5
+SPI-MOSI ::= 23
+SPI-MISO ::= 19
+SPI-CLK ::= 18
+SPI-SS ::= 5
 
 /*
 rkf rejsekort denmark
@@ -22,8 +22,8 @@ Idraetscentre:
 sector 4-14: a: 3E65E4FB65B3
 */
 
-REJSEKORT_UID ::= #[ 0x2b, 0x53, 0x23, 0x83 ]
-REJESKORT_KEYS ::= (::
+REJSEKORT-UID ::= #[ 0x2b, 0x53, 0x23, 0x83 ]
+REJESKORT-KEYS ::= (::
   key1 := #[ 0xfc, 0x00, 0x01, 0x87,0x78,0xf7]
   key2 := #[ 0x02, 0x97, 0x92, 0x7c,0x0f,0x77]
   key3 := #[ 0x72, 0x2b, 0xfc, 0xc5,0x37,0x5f]
@@ -37,27 +37,27 @@ REJESKORT_KEYS ::= (::
   keys
 ).call
 
-IDRAET_UID ::= #[ 0x04, 0x17, 0x99, 0xf2, 0xda, 0x61, 0x80 ]
-IDRAET_KEYS ::= (::
+IDRAET-UID ::= #[ 0x04, 0x17, 0x99, 0xf2, 0xda, 0x61, 0x80 ]
+IDRAET-KEYS ::= (::
   key1 := #[ 0x3e, 0x65, 0xe4, 0xfb,0x65,0xb3]
   keys := []
-  4.repeat: keys.add mfrc522.MifareCard.DEFAULT_KEY
+  4.repeat: keys.add mfrc522.MifareCard.DEFAULT-KEY
   11.repeat: keys.add key1
-  keys.add mfrc522.MifareCard.DEFAULT_KEY
+  keys.add mfrc522.MifareCard.DEFAULT-KEY
   keys
 ).call
 
 main:
   bus := spi.Bus
-      --clock = gpio.Pin SPI_CLK
-      --mosi = gpio.Pin SPI_MOSI
-      --miso = gpio.Pin SPI_MISO
+      --clock = gpio.Pin SPI-CLK
+      --mosi = gpio.Pin SPI-MOSI
+      --miso = gpio.Pin SPI-MISO
 
-  device := bus.device --cs=(gpio.Pin SPI_SS) --frequency=1_000_000
+  device := bus.device --cs=(gpio.Pin SPI-SS) --frequency=1_000_000
 
   reader := mfrc522.Mfrc522 device
 
-  reader.self_test
+  reader.self-test
 
   reader.on
 
@@ -66,13 +66,13 @@ main:
     iteration++
 
     catch --trace:
-      found_piccs := []
+      found-piccs := []
       reader.do --new:
         print "--------------- $iteration $it"
-        found_piccs.add it
+        found-piccs.add it
 
-      found_piccs.do:
-        reader.with_picc it.uid:
+      found-piccs.do:
+        reader.with-picc it.uid:
           if it is mfrc522.MifareCard:
             mifare := it as mfrc522.MifareCard
 
@@ -81,13 +81,13 @@ main:
             //   print dump[from..to]
 
             keys := null
-            if mifare.uid == REJSEKORT_UID:
-              keys = REJESKORT_KEYS
-            else if mifare.uid == IDRAET_UID:
-              keys = IDRAET_KEYS
+            if mifare.uid == REJSEKORT-UID:
+              keys = REJESKORT-KEYS
+            else if mifare.uid == IDRAET-UID:
+              keys = IDRAET-KEYS
 
             print "uid: $mifare.uid"
-            mifare.write_to_stdout --keys=keys
+            mifare.write-to-stdout --keys=keys
             print "done"
 
             // mifare.authenticate --block=3 --is_key_a (keys and keys[0])
@@ -134,6 +134,6 @@ main:
             //   print "old: $(mifare.read --block=5)"
             //   mifare.write --block=5 #[ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f ]
 
-    reader.antenna_off
+    reader.antenna-off
     sleep --ms=2_000
-    reader.antenna_on
+    reader.antenna-on
