@@ -10,10 +10,11 @@ import serial
 import nfc.card-type show CardType
 import nfc.crc show crc-a check-crc-a
 import nfc.nfc-exception show NfcException
+import nfc.reader show Reader ReaderCapabilities Target
 import .crypto1
 import .frame
 
-class Mfrc522:
+class Mfrc522 implements Reader:
   static COMMAND-REGISTER_ ::= 0x01 << 1
   static COM-IRQ-REGISTER_ ::= 0x04 << 1
   static ERROR-REGISTER_ ::= 0x06 << 1
@@ -89,6 +90,25 @@ class Mfrc522:
 
     // A soft reset turns the antennas off.
     antenna-on
+
+  off -> none:
+    antenna-off
+
+  capabilities -> ReaderCapabilities:
+    return ReaderCapabilities
+        --supports-raw-frames
+        --no-firmware-does-anticollision
+
+  /**
+  Polls once for a target in the field.
+
+  See $Reader.poll.
+  */
+  poll --new/bool=false -> Target?:
+    if not wake-up-cards_ --only-new=new: return null
+    catch --unwind=(: not (it is NfcException and it.code == NfcException.NO-RESPONSE)):
+      return select_
+    return null
 
   /**
   Transmits a short frame and returns the response.
@@ -907,7 +927,7 @@ An RFID card.
 
 Also known as "PICC" ("Proximity Inductive Coupling Card").
 */
-class Card:
+class Card implements Target:
   /** The UID of this card. */
   uid/ByteArray
   // The proximity coupling device (aka "transceiver").
