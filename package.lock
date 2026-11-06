@@ -1,1 +1,5 @@
-# Toit Lock File.
+prefixes:
+  nfc: toit-nfc
+packages:
+  toit-nfc:
+    path: ../toit-nfc

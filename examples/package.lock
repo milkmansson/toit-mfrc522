@@ -3,3 +3,7 @@ prefixes:
 packages:
   toit-mfrc522:
     path: ..
+    prefixes:
+      nfc: toit-nfc
+  toit-nfc:
+    path: ../../toit-nfc

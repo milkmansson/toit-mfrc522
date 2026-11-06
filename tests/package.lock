@@ -1,5 +1,9 @@
 prefixes:
-  mfrc522: ..
+  mfrc522: toit-mfrc522
 packages:
-  ..:
+  toit-mfrc522:
     path: ..
+    prefixes:
+      nfc: toit-nfc
+  toit-nfc:
+    path: ../../toit-nfc

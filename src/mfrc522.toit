@@ -7,9 +7,11 @@ A driver for the MFRC522 RFID reader.
 */
 
 import serial
+import nfc.card-type show CardType
+import nfc.crc show crc-a check-crc-a
+import nfc.nfc-exception show NfcException
 import .crypto1
 import .frame
-import .nfc-exception
 
 class Mfrc522:
   static COMMAND-REGISTER_ ::= 0x01 << 1
@@ -125,7 +127,7 @@ class Mfrc522:
   */
   transceive-standard_ bytes/ByteArray --check-crc/bool=false --add-crc/bool=true -> Frame?:
     if add-crc:
-      crc := compute-crc_ bytes
+      crc := crc-a bytes
       bytes += #[crc & 0xFF, (crc >> 8) & 0xFF]
 
     result-frame/Frame? := ?
@@ -145,7 +147,7 @@ class Mfrc522:
 
     assert: not result-frame.collision-position
     assert: result-frame.bytes.size * 8 == result-frame.size-in-bits
-    check-crc_ result-frame.bytes
+    check-crc-a result-frame.bytes
     return Frame result-frame.bytes[..result-frame.bytes.size - 2]
 
   /**
@@ -368,32 +370,6 @@ class Mfrc522:
         --raw=frame.is-raw
 
     return result-frame
-
-  /**
-  Computes the CRC as required by the ISO 14443-3 standard.
-
-  The chip actually has a hardware based CRC, but it's almost certainly faster to just do it here.
-  */
-  compute-crc_ data/ByteArray -> int:
-    // Specification 6.2.4 CRC_A.
-    // Also see Appendix B.
-    // Initial register shall be 0x6363.
-    // The polynomial is from ISO/IEC 13239: 0x8408
-    crc := 0x6363
-    data.size.repeat:
-      crc = crc ^ data[it]
-      8.repeat:
-        if (crc & 1) != 0:
-          crc = (crc >> 1) ^ 0x8408
-        else:
-          crc >>= 1
-    return crc
-
-  check-crc_ data/ByteArray:
-    if data.size < 3: throw NfcException.protocol
-    crc := compute-crc_ data[..data.size - 2]
-    if crc & 0xFF != data[data.size - 2] or crc >> 8 != data[data.size - 1]:
-      throw NfcException.crc
 
   /**
   Executes an anticollision to get the UID of a PICC in the field.
@@ -932,20 +908,6 @@ An RFID card.
 Also known as "PICC" ("Proximity Inductive Coupling Card").
 */
 class Card:
-  /** Unknown type of card. */
-  static TYPE-UNKNOWN	::= 0
-
-  /** MIFARE Ultralight or Ultralight C. */
-  static TYPE-MIFARE-UL ::= 1
-  /** MIFARE Classic protocol, 320 bytes. */
-  static TYPE-MIFARE-MINI ::= 2
-  /** MIFARE Classic protocol, 1KB. */
-  static TYPE-MIFARE-1K	::= 3
-  /** MIFARE Classic protocol, 4KB. */
-  static TYPE-MIFARE-4K ::= 4
-  /** MIFARE Plus (2KB or 4KB) or MIFARE DESFire */
-  static TYPE-MIFARE-PLUS-DESFIRE ::= 5
-
   /** The UID of this card. */
   uid/ByteArray
   // The proximity coupling device (aka "transceiver").
@@ -972,7 +934,7 @@ class Card:
 
   Note that MIFARE Plus cards might report themselves as generic cards for privace reasons.
   */
-  type -> int: return sak-to-type_ sak_ uid
+  type -> int: return CardType.from-sak sak_ uid
 
   /**
   Transmits the given $bytes as standard frame to the card.
@@ -998,31 +960,10 @@ class Card:
   close -> none:
     halt_
 
-  static sak-to-type_ sak/int uid/ByteArray -> int:
-    // See NXP AN 10833 - MIFARE Type ID Procedure.
-    type-bits := sak & 0x7F
-    if type-bits == 0x00: return TYPE-MIFARE-UL
-    if type-bits == 0x09: return TYPE-MIFARE-MINI
-    if type-bits == 0x08: return uid.size == 4 ? TYPE-MIFARE-1K : TYPE-MIFARE-PLUS-DESFIRE
-    if type-bits == 0x18: return uid.size == 4 ? TYPE-MIFARE-4K : TYPE-MIFARE-PLUS-DESFIRE
-    if type-bits == 0x10: return TYPE-MIFARE-PLUS-DESFIRE
-    if type-bits == 0x11: return TYPE-MIFARE-PLUS-DESFIRE
-    if type-bits == 0x20: return TYPE-MIFARE-PLUS-DESFIRE
-    return TYPE-UNKNOWN
-
-  static type-to-str_ t/int -> string:
-    if t == TYPE-UNKNOWN: return "Unknown card"
-    if t == TYPE-MIFARE-MINI: return "MIFARE Mini, 320 bytes"
-    if t == TYPE-MIFARE-1K: return "MIFARE 1KB"
-    if t == TYPE-MIFARE-4K: return "MIFARE 4KB"
-    if t == TYPE-MIFARE-PLUS-DESFIRE: return "MIFARE Plus or DESFire"
-    if t == TYPE-MIFARE-UL: return "MIFARE Ultralight or Ultralight C"
-    unreachable
-
   stringify -> string:
     uid-str := ""
     uid.do: uid-str += "$(%02x it)"
-    return "UID: $uid-str - $(type-to-str_ type)"
+    return "UID: $uid-str - $(CardType.to-string type)"
 
 // https://www.nxp.com/docs/en/data-sheet/MF1S50YYX_V1.pdf
 class MifareCard extends Card:
@@ -1094,11 +1035,11 @@ class MifareCard extends Card:
     return block % 16 == 0
 
   sectors-count -> int:
-    if type == Card.TYPE-MIFARE-MINI:
+    if type == CardType.MIFARE-MINI:
       return 5
-    else if type == Card.TYPE-MIFARE-1K or type == Card.TYPE-MIFARE-PLUS-DESFIRE:
+    else if type == CardType.MIFARE-1K or type == CardType.MIFARE-PLUS-DESFIRE:
       return 16
-    else if type == Card.TYPE-MIFARE-4K:
+    else if type == CardType.MIFARE-4K:
       return 40
     throw "Unknown card"
 

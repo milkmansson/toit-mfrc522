@@ -1,2 +1,5 @@
 name: mfrc522
 description: Driver for the MFRC522 RFID reader.
+dependencies:
+  nfc:
+    path: ../toit-nfc
