@@ -6,7 +6,6 @@ import mfrc522
 import mifare-classic
 import nfc.card-type show CardType
 import spi
-import gpio
 
 SPI-MOSI ::= 23
 SPI-MISO ::= 19
@@ -51,11 +50,11 @@ IDRAET-KEYS ::= (::
 
 main:
   bus := spi.Bus
-      --clock = gpio.Pin SPI-CLK
-      --mosi = gpio.Pin SPI-MOSI
-      --miso = gpio.Pin SPI-MISO
+      --clock = SPI-CLK
+      --mosi = SPI-MOSI
+      --miso = SPI-MISO
 
-  device := bus.device --cs=(gpio.Pin SPI-SS) --frequency=1_000_000
+  device := bus.device --cs=SPI-SS --frequency=1_000_000
 
   reader := mfrc522.Mfrc522 device
 
